@@ -35,14 +35,20 @@ static const char *TAG = "i2c-simple-example";
 #define I2C_MASTER_TIMEOUT_MS       1000
 
 
-#define INPUT_PIN 15
+#define INPUT_PIN_1 25
+#define INPUT_PIN_2 33
+#define INPUT_PIN_3 32
+#define INPUT_PIN_4 35
+
+#define LED_PIN_1 2
+#define LED_PIN_2 4
+#define LED_PIN_3 16
+#define LED_PIN_4 17
+
 #define LED_PIN 2
 
 
 
-enum etat{Ready_To_Connect,Vehicle_Connected,Started_Charging,Stopped_Charging};
-bool on = true;
-int counter = 0;
 
 /**
  * @brief i2c master initialization
@@ -66,9 +72,13 @@ static esp_err_t i2c_master_init(void)
 }
 
 
+enum etat{Ready_To_Connect,Vehicle_Connected,Started_Charging,Stopped_Charging};
+bool on = true;
+int counter = 0;
 
 int state = 0;
 QueueHandle_t interputQueue;
+enum etat etat_actuel;
 
 static void IRAM_ATTR gpio_interrupt_handler(void *args)
 {
@@ -76,14 +86,49 @@ static void IRAM_ATTR gpio_interrupt_handler(void *args)
     xQueueSendFromISR(interputQueue, &pinNumber, NULL);
 }
 
-void Interrupt_Task(void *params)
+void Interrupt_Task_bck(void *params)
 {
+    
     counter = counter+1;
     lcd_clear();
     char buff[10];
-    sprintf(buff,"val = %d",counter);
+    sprintf(buff,"Triggered");
+    //sprintf(buff,"val = %d",counter);
     lcd_put_cur(0,0);
     lcd_send_string(buff);
+    
+    /*lcd_clear();
+    sprintf(buff,"Back");
+    lcd_put_cur(0,0);
+    lcd_send_string(buff);*/
+
+}
+
+void transition();
+void Interrupt_Task(void *params)
+{
+    int pinNumber;
+    for (;;) {
+        if (xQueueReceive(interputQueue, &pinNumber, portMAX_DELAY)) {
+                
+                //transition(etat_actuel, (enum etat)pinNumber);
+                gpio_set_level(LED_PIN,1);
+                gpio_set_level(LED_PIN_1,1);
+                gpio_set_level(LED_PIN_2,1);
+                gpio_set_level(LED_PIN_3,1);
+                gpio_set_level(LED_PIN_4,1);
+                
+                vTaskDelay(pdMS_TO_TICKS(100));
+                gpio_set_level(LED_PIN,0);
+                gpio_set_level(LED_PIN_1,0);
+                gpio_set_level(LED_PIN_2,0);
+                gpio_set_level(LED_PIN_3,0);
+                gpio_set_level(LED_PIN_4,0);
+                /*gpio_set_level(LED_PIN,1);
+                vTaskDelay(pdMS_TO_TICKS(100));
+                gpio_set_level(LED_PIN,0);*/
+        }
+    }
 }
 
 
@@ -94,6 +139,7 @@ void transition(enum etat etat_actuel, enum etat signal){
 
     lcd_clear();
     lcd_put_cur(0,0);
+    gpio_set_level(LED_PIN_1,1);
 
     if( etat_actuel == (signal-1) || signal == Ready_To_Connect )
     {
@@ -101,16 +147,20 @@ void transition(enum etat etat_actuel, enum etat signal){
 
             case Ready_To_Connect:
                 lcd_send_string("Connect the Car :) ");
+                gpio_set_level(LED_PIN_1,1);
                 break;
             case Vehicle_Connected:
+                gpio_set_level(LED_PIN_2,1);
                 lcd_send_string("Vehicle detected !");
                 lcd_put_cur(1,0);
                 lcd_send_string("Processing ...");
                 break;
             case Started_Charging:
+                gpio_set_level(LED_PIN_3,1);
                 lcd_send_string("Charging "); //To be replaced with the display charging funtion !!!
                 break;
             case Stopped_Charging:
+                gpio_set_level(LED_PIN_4,1);
                 lcd_send_string("Charging Stopped");
                 lcd_send_string("Enjoy the ride !");
         }
@@ -126,7 +176,7 @@ void transition(enum etat etat_actuel, enum etat signal){
 void app_main(void)
 {
 
-    enum etat etat_actuel = Ready_To_Connect;
+    etat_actuel = Ready_To_Connect;
 
     ESP_ERROR_CHECK(i2c_master_init());
     ESP_LOGI(TAG, "I2C initialized successfully");
@@ -136,20 +186,41 @@ void app_main(void)
 /********************************************/
     //gpio_pad_select_gpio(INPUT_PIN);
     //gpio_pad_select_gpio(LED_PIN);
-    //gpio_set_direction(LED_PIN, GPIO_MODE_OUTPUT);
+    gpio_set_direction(LED_PIN_1, GPIO_MODE_OUTPUT);
+    gpio_set_direction(LED_PIN_2, GPIO_MODE_OUTPUT);
+    gpio_set_direction(LED_PIN_3, GPIO_MODE_OUTPUT);
+    gpio_set_direction(LED_PIN_4, GPIO_MODE_OUTPUT);
+    gpio_set_direction(LED_PIN, GPIO_MODE_OUTPUT);
 
     //gpio_pad_select_gpio(INPUT_PIN);
-    gpio_set_direction(INPUT_PIN, GPIO_MODE_INPUT);
-    gpio_pulldown_en(INPUT_PIN);
-    gpio_pullup_dis(INPUT_PIN);
-    gpio_set_intr_type(INPUT_PIN, GPIO_INTR_POSEDGE);
+    gpio_set_direction(INPUT_PIN_1, GPIO_MODE_INPUT);
+    gpio_set_intr_type(INPUT_PIN_1, GPIO_INTR_POSEDGE);
+    gpio_set_direction(INPUT_PIN_2, GPIO_MODE_INPUT);
+    gpio_set_intr_type(INPUT_PIN_2, GPIO_INTR_POSEDGE);
+    gpio_set_direction(INPUT_PIN_3, GPIO_MODE_INPUT);
+    gpio_set_intr_type(INPUT_PIN_3, GPIO_INTR_POSEDGE);    
+    gpio_set_direction(INPUT_PIN_4, GPIO_MODE_INPUT);
+    gpio_set_intr_type(INPUT_PIN_4, GPIO_INTR_POSEDGE);
+    gpio_pulldown_en(INPUT_PIN_1);
+    gpio_pullup_dis(INPUT_PIN_1);
+    gpio_pulldown_en(INPUT_PIN_2);
+    gpio_pullup_dis(INPUT_PIN_2);
+    gpio_pulldown_en(INPUT_PIN_3);
+    gpio_pullup_dis(INPUT_PIN_3);
+    gpio_pulldown_en(INPUT_PIN_4);
+    gpio_pullup_dis(INPUT_PIN_4);
 
     interputQueue = xQueueCreate(10, sizeof(int));
     xTaskCreate(Interrupt_Task, "Interrupt_Task", 2048, NULL, 1, NULL);
 
     gpio_install_isr_service(0);
-    gpio_isr_handler_add(INPUT_PIN, gpio_interrupt_handler, (void *)INPUT_PIN);
+    gpio_isr_handler_add(INPUT_PIN_1, gpio_interrupt_handler, (void* )0);
+    gpio_isr_handler_add(INPUT_PIN_2, gpio_interrupt_handler, (void *)1);
+    gpio_isr_handler_add(INPUT_PIN_3, gpio_interrupt_handler, (void *)2);
+    gpio_isr_handler_add(INPUT_PIN_4, gpio_interrupt_handler, (void *)3);
+      /*************************************/
 
-    /*************************************/
+    gpio_set_level(LED_PIN_1,0);
+
 
 }
