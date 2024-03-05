@@ -24,7 +24,7 @@ void transition();
 enum etat pin_to_etat();
 
 enum etat etat_actuel;
-
+bool start;
 void configure_voltage_reader(){
 
     // Configure ADC1 capture width
@@ -77,59 +77,61 @@ enum etat voltage_to_etat(){
 
 
 void transition(){
-    enum etat signal = voltage_to_etat();
-    if( signal == Ready_To_Connect || signal == etat_actuel || etat_actuel == (signal-1) )
-    {
-        switch(signal){
+    if(start){
+        enum etat signal = voltage_to_etat();
+        if( signal == Ready_To_Connect || signal == etat_actuel || etat_actuel == (signal-1) )
+        {
+            switch(signal){
 
-            case Ready_To_Connect:
-                gpio_set_level(LED_PIN_1,1);
-                gpio_set_level(LED_PIN_2,0);
-                gpio_set_level(LED_PIN_3,0);
-                gpio_set_level(LED_PIN_4,0);
-                etat_actuel=Ready_To_Connect;
-                //display(Ready_To_Connect);
-                break;
+                case Ready_To_Connect:
+                    gpio_set_level(LED_PIN_1,1);
+                    gpio_set_level(LED_PIN_2,0);
+                    gpio_set_level(LED_PIN_3,0);
+                    gpio_set_level(LED_PIN_4,0);
+                    etat_actuel=Ready_To_Connect;
+                    //display(Ready_To_Connect);
+                    break;
 
-            case Vehicle_Connected:
-                gpio_set_level(LED_PIN_1,1);
-                gpio_set_level(LED_PIN_2,1);
-                gpio_set_level(LED_PIN_3,0);
-                gpio_set_level(LED_PIN_4,0);
-                etat_actuel = Vehicle_Connected;
-                //display(Vehicle_Connected);
-                break;
+                case Vehicle_Connected:
+                    gpio_set_level(LED_PIN_1,1);
+                    gpio_set_level(LED_PIN_2,1);
+                    gpio_set_level(LED_PIN_3,0);
+                    gpio_set_level(LED_PIN_4,0);
+                    etat_actuel = Vehicle_Connected;
+                    //display(Vehicle_Connected);
+                    break;
 
-            case Started_Charging:
-                gpio_set_level(LED_PIN_1,1);
-                gpio_set_level(LED_PIN_2,1);
-                gpio_set_level(LED_PIN_3,1);
-                gpio_set_level(LED_PIN_4,0);
-                etat_actuel = Started_Charging;
-                //display(Started_Charging);
-                break;
+                case Started_Charging:
+                    gpio_set_level(LED_PIN_1,1);
+                    gpio_set_level(LED_PIN_2,1);
+                    gpio_set_level(LED_PIN_3,1);
+                    gpio_set_level(LED_PIN_4,0);
+                    etat_actuel = Started_Charging;
+                    //display(Started_Charging);
+                    break;
 
-            case Stopped_Charging:
-                gpio_set_level(LED_PIN_1,1);
-                gpio_set_level(LED_PIN_2,1);
-                gpio_set_level(LED_PIN_3,1);
-                gpio_set_level(LED_PIN_4,1);
-                etat_actuel = Stopped_Charging;
-                //display(Stopped_Charging);
-                break;
+                case Stopped_Charging:
+                    gpio_set_level(LED_PIN_1,1);
+                    gpio_set_level(LED_PIN_2,1);
+                    gpio_set_level(LED_PIN_3,1);
+                    gpio_set_level(LED_PIN_4,1);
+                    etat_actuel = Stopped_Charging;
+                    //display(Stopped_Charging);
+                    break;
 
+            }
         }
-    }
 
-    else{
-        //lcd_send_string("Error!!!");
-        //lcd_put_cur(1,0);
-        //lcd_send_string("Connect the Car");
-        gpio_set_level(LED_PIN_1,1);
-        gpio_set_level(LED_PIN_2,0);
-        gpio_set_level(LED_PIN_3,0);
-        gpio_set_level(LED_PIN_4,1);
-        etat_actuel=Ready_To_Connect;
+        else{
+            //lcd_send_string("Error!!!");
+            //lcd_put_cur(1,0);
+            //lcd_send_string("Connect the Car");
+            gpio_set_level(LED_PIN_1,1);
+            gpio_set_level(LED_PIN_2,0);
+            gpio_set_level(LED_PIN_3,0);
+            gpio_set_level(LED_PIN_4,1);
+            etat_actuel=Ready_To_Connect;
+        }
     }
 
 }
@@ -137,6 +139,7 @@ void transition(){
 
 void app_main(void)
 {
+    start = 1;
     etat_actuel = Ready_To_Connect;
     configure_voltage_reader();
     configure_LED();
