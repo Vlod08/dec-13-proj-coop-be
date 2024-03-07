@@ -5,43 +5,29 @@
 #include "driver/adc.h"
 
 #define OUT_PIN GPIO_NUM_2 
-#define PIN_13 ADC2_CHANNEL_4
-#define freq 1
 
-// toggles the state of the output pin 2 with the defined frequency 
 
-void rapport_cyclique_to_wait_time(double rc, int* up_time, int* down_time ){
-    *up_time = (int)(1000*rc);
-    *down_time = (int)((1-rc)*1000);
-}
-
-double rapport_cyclique_to_amp(double rc){
-    return rc * MAX_AMP;
-}
-
-void app_main() {
-
-    adc1_config_width(ADC_WIDTH_BIT_12);
-    adc1_config_channel_atten(ADC1_CHANNEL_6,ADC_ATTEN_DB_0);
-    uint32_t adc_reading = 0;
-
-    // Configure the GPIO as an output
-    gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << OUT_PIN),
-        .mode = GPIO_MODE_OUTPUT,
-        .intr_type = GPIO_INTR_DISABLE,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+static void example_ledc_init(void)
+{
+    // Prepare and then apply the LEDC PWM timer configuration
+    ledc_timer_config_t ledc_timer = {
+        .speed_mode       = LEDC_MODE,
+        .timer_num        = LEDC_TIMER,
+        .duty_resolution  = LEDC_DUTY_RES,
+        .freq_hz          = LEDC_FREQUENCY,  // Set output frequency at 4 kHz
+        .clk_cfg          = LEDC_AUTO_CLK
     };
-    gpio_config(&io_conf);
-    int up_time, down_time;
-    rapport_cyclique_to_wait_time(1,&up_time,&down_time);
+    ESP_ERROR_CHECK(ledc_timer_config(&ledc_timer));
 
-    while (1) {
-
-        gpio_set_level(OUT_PIN,1);
-        vTaskDelay(pdMS_TO_TICKS(up_time)); // wait for the up_time
-        gpio_set_level(OUT_PIN,0);
-        vTaskDelay(pdMS_TO_TICKS(down_time)); // wait for the down_time
-        }
+    // Prepare and then apply the LEDC PWM channel configuration
+    ledc_channel_config_t ledc_channel = {
+        .speed_mode     = LEDC_MODE,
+        .channel        = LEDC_CHANNEL,
+        .timer_sel      = LEDC_TIMER,
+        .intr_type      = LEDC_INTR_DISABLE,
+        .gpio_num       = LEDC_OUTPUT_IO,
+        .duty           = 0, // Set duty to 0%
+        .hpoint         = 0
+    };
+    ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
 }
