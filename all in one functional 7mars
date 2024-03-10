@@ -1,3 +1,25 @@
+/* i2c - Simple example
+
+   Simple I2C example that shows how to initialize I2C
+   as well as reading and writing from and to registers for a sensor connected over I2C.
+
+   The sensor used in this example is a MPU9250 inertial measurement unit.
+
+   For other examples please check:
+   https://github.com/espressif/esp-idf/tree/master/examples
+
+   See README.md file to get detailed usage of this example.
+
+   This example code is in the Public Domain (or CC0 licensed, at your option.)
+
+   Unless required by applicable law or agreed to in writing, this
+   software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+   CONDITIONS OF ANY KIND, either express or implied.
+*/
+
+#include "esp_log.h"
+#include "driver/i2c.h"
+#include "i2c-lcd.h"
 #include <stdio.h>
 #include "driver/ledc.h"
 #include "esp_err.h"
@@ -8,10 +30,36 @@
 #include "driver/adc.h"
 #include "driver/gpio.h"
 
-// MODS 
-// measure the volt with pwm
-// combine the circuit 
-// implement the lcd
+static const char *TAG = "i2c-simple-example";
+
+char buffer[10];
+float num = 12.34;
+
+/**
+ * @brief i2c master initialization
+ */
+static esp_err_t i2c_master_init(void)
+{
+    int i2c_master_port = I2C_NUM_0;
+
+    i2c_config_t conf = {
+        .mode = I2C_MODE_MASTER,
+        .sda_io_num = GPIO_NUM_21,
+        .scl_io_num = GPIO_NUM_22,
+        .sda_pullup_en = GPIO_PULLUP_ENABLE,
+        .scl_pullup_en = GPIO_PULLUP_ENABLE,
+        .master.clk_speed = 100000,
+    };
+
+    i2c_param_config(i2c_master_port, &conf);
+
+    return i2c_driver_install(i2c_master_port, conf.mode, 0, 0, 0);
+}
+
+
+
+
+
 
 #define LEDC_TIMER              LEDC_TIMER_0
 #define LEDC_MODE               LEDC_LOW_SPEED_MODE
@@ -32,6 +80,8 @@
 #define LED_PIN_3 33
 #define LED_PIN_4 32
 
+
+
 uint32_t voltage;
 
 void pwm_init(void)
@@ -41,7 +91,7 @@ void pwm_init(void)
         .speed_mode       = LEDC_MODE,
         .timer_num        = LEDC_TIMER,
         .duty_resolution  = LEDC_DUTY_RES,
-        .freq_hz          = 1000,  
+        .freq_hz          = 1000,
         .clk_cfg          = LEDC_AUTO_CLK
     };
     ESP_ERROR_CHECK(ledc_timer_config(&ledc_timer));
@@ -59,15 +109,23 @@ void pwm_init(void)
     ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
 }
 
+static void stop_pwm_temporarily()
+{
+    
+    ESP_ERROR_CHECK(ledc_stop(LEDC_MODE, LEDC_CHANNEL, 1));
+      
+}
+
 void update_duty(unsigned int freq, unsigned int uduty){
 
+    gpio_set_pull_mode(LEDC_OUTPUT_IO,GPIO_PULLUP_DISABLE);
     
-    ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));  
+    ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
     ledc_timer_config_t ledc_timer =  {
         .speed_mode       = LEDC_MODE,
         .timer_num        = LEDC_TIMER,
         .duty_resolution  = LEDC_DUTY_RES,
-        .freq_hz          = freq,  
+        .freq_hz          = freq,
         .clk_cfg          = LEDC_AUTO_CLK
     };
 
@@ -102,7 +160,7 @@ void configure_voltage_reader(){
 
     // Configure ADC1 capture width
     // 12 bit decimal value from 0 to 4095
-    adc1_config_width(ADC_WIDTH_BIT_12); 
+    adc1_config_width(ADC_WIDTH_BIT_12);
     //ADC1_CHANNEL_6 = pin 34),  attenuation (ADC_ATTEN_DB_11)
     adc1_config_channel_atten(ADC1_CHANNEL_6, ADC_ATTEN_DB_11);
     // pin 33
@@ -120,11 +178,14 @@ void configure_LED(){
     gpio_set_direction(LED_PIN_3, GPIO_MODE_OUTPUT);
     gpio_set_direction(LED_PIN_4, GPIO_MODE_OUTPUT);
     
+
 }
+
+
 
 void read_voltage(){
     for(;;){
-        voltage = adc1_get_raw(ADC1_CHANNEL_6); 
+        voltage = adc1_get_raw(ADC1_CHANNEL_6);
         printf("%ld\n", voltage);
         vTaskDelay(500 / portTICK_PERIOD_MS);
         transition();
@@ -137,16 +198,47 @@ enum etat voltage_to_etat(){
     }
     else if (voltage < V1){
         return Vehicle_Connected;
-    } 
+    }
     else if(voltage < V2){
         return Started_Charging;
-    }  
+    }
     else if(voltage < V3){
         return Stopped_Charging;
-    }  
+    }
     return Ready_To_Connect;
 }
 
+void display( enum etat e){
+
+    lcd_clear();
+    lcd_put_cur(0,0);
+    
+    switch(e){
+        case Ready_To_Connect: 
+            lcd_send_string("Connect the Car... ");
+            break;
+        
+        case Vehicle_Connected:
+            lcd_send_string("Vehicle detected !");
+            lcd_put_cur(1,0);
+            lcd_send_string("Processing ...");
+
+            printf("Vehicle detected \n");
+            break;
+        
+        case Started_Charging:
+            lcd_send_string("Charging...");
+            printf("Charging \n");
+            break;
+
+        case Stopped_Charging:
+            lcd_send_string("Charging Stopped");
+            lcd_put_cur(1,0);
+            lcd_send_string("Enjoy the ride !");
+            printf("Charging stopped \n");
+            break;
+    }
+}
 
 
 void transition(){
@@ -157,50 +249,54 @@ void transition(){
             switch(signal){
 
                 case Ready_To_Connect:
-                    gpio_set_level(LED_PIN_1,1);
-                    gpio_set_level(LED_PIN_2,0);
-                    gpio_set_level(LED_PIN_3,0);
-                    gpio_set_level(LED_PIN_4,0);
+                    //gpio_set_level(LED_PIN_1,1);
+                    //gpio_set_level(LED_PIN_2,0);
+                    //gpio_set_level(LED_PIN_3,0);
+                    //gpio_set_level(LED_PIN_4,0);
                     etat_actuel=Ready_To_Connect;
-                    //display(Ready_To_Connect);
-                    update_duty(1000,8192);
+                    display(Ready_To_Connect);
+                    stop_pwm_temporarily();
+                    //courrant_continue();
                     break;
 
                 case Vehicle_Connected:
-                    gpio_set_level(LED_PIN_1,1);
-                    gpio_set_level(LED_PIN_2,1);
-                    gpio_set_level(LED_PIN_3,0);
-                    gpio_set_level(LED_PIN_4,0);
+                    //gpio_set_level(LED_PIN_1,1);
+                    //gpio_set_level(LED_PIN_2,1);
+                    //gpio_set_level(LED_PIN_3,0);
+                    //gpio_set_level(LED_PIN_4,0);
+                    
                     etat_actuel = Vehicle_Connected;
-                    update_duty(1000,4096); 
-                    //display(Vehicle_Connected);
+                    gpio_set_level(LEDC_OUTPUT_IO,0);
+                    update_duty(1000,4096);
+                    display(Vehicle_Connected);
                     break;
 
                 case Started_Charging:
-                    gpio_set_level(LED_PIN_1,1);
-                    gpio_set_level(LED_PIN_2,1);
-                    gpio_set_level(LED_PIN_3,1);
-                    gpio_set_level(LED_PIN_4,0);
+                    //gpio_set_level(LED_PIN_1,1);
+                    //gpio_set_level(LED_PIN_2,1);
+                    //gpio_set_level(LED_PIN_3,1);
+                    //gpio_set_level(LED_PIN_4,0);
                     etat_actuel = Started_Charging;
-                    //display(Started_Charging);
+                    display(Started_Charging);
                     break;
 
                 case Stopped_Charging:
-                    gpio_set_level(LED_PIN_1,1);
-                    gpio_set_level(LED_PIN_2,1);
-                    gpio_set_level(LED_PIN_3,1);
-                    gpio_set_level(LED_PIN_4,1);
+                    //gpio_set_level(LED_PIN_1,1);
+                    //gpio_set_level(LED_PIN_2,1);
+                    //gpio_set_level(LED_PIN_3,1);
+                    //gpio_set_level(LED_PIN_4,1);
                     etat_actuel = Stopped_Charging;
-                    //display(Stopped_Charging);
+                    display(Stopped_Charging);
                     break;
 
             }
         }
 
         else{
-            //lcd_send_string("Error!!!");
-            //lcd_put_cur(1,0);
-            //lcd_send_string("Connect the Car");
+            lcd_clear();
+            lcd_send_string("Error!!!");
+            lcd_put_cur(1,0);
+            lcd_send_string("Connect the Car");
             gpio_set_level(LED_PIN_1,1);
             gpio_set_level(LED_PIN_2,0);
             gpio_set_level(LED_PIN_3,0);
@@ -216,8 +312,13 @@ void transition(){
 
 void app_main(void)
 {
+    ESP_ERROR_CHECK(i2c_master_init());
+    ESP_LOGI(TAG, "I2C initialized successfully");
+
     start = 1;
     etat_actuel = Ready_To_Connect;
+    lcd_init();
+    lcd_clear();
     configure_voltage_reader();
     configure_LED();
     xTaskCreatePinnedToCore(read_voltage,"voltage",2048,NULL,2,NULL,1);
