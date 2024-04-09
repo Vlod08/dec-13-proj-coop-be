@@ -30,7 +30,15 @@ void update_duty(unsigned int freq, unsigned int uduty);
 void read_voltage();
 enum etat voltage_to_etat();
 bool start = true;
-
+char lcd_buff[50], ble_buff[20];
+int conso_tot = 0;
+struct date{
+    int hour;
+    int min;
+};
+struct date remaining_time={-1,-1};
+uint intensite = 0;
+struct date uptime = {1,2};
 
 /*#######################################################################################*/
 /*#################### CONFIGS AND FUNCTIONS FOR THE BLUETOOTH  #######################*/
@@ -39,7 +47,6 @@ bool start = true;
 char *TAG = "BLE-Server";
 uint8_t ble_addr_type;
 void ble_app_advertise(void);
-char data_from_esp[50];
 
 void update_buff_20(char buff[], char string[], int taille){
     int t_str = strlen(string);
@@ -60,12 +67,12 @@ static int device_write(uint16_t conn_handle, uint16_t attr_handle, struct ble_g
     
     char recv[8] = {};
     os_mbuf_copydata(ctxt->om,0,8,recv);
-     printf("Data from the client: %s\n",recv);
+    printf("Data from the client: %s\n",recv);
     if(strcmp(recv,"ON")==0)
     {
-        start =true;
+        start = true;
     }
-    else {
+    else if(strcmp(recv,"OFF")==0) {
         start = false;
     }
     return 0;
@@ -78,7 +85,7 @@ static int device_read(uint16_t con_handle, uint16_t attr_handle, struct ble_gat
    //clear_mbuf(ctxt->om);
    ESP_LOGI("GAP", "call start");
    
-   int append_size = os_mbuf_append(ctxt->om,data_from_esp, sizeof(data_from_esp)/sizeof(char));
+   int append_size = os_mbuf_append(ctxt->om,ble_buff, sizeof(ble_buff)/sizeof(char));
    ESP_LOGI("GAP", "call done");
    return 0;
 }
@@ -216,20 +223,30 @@ void display( enum etat e){
 
     switch(e){
         case Ready_To_Connect:
-            lcd_send_string("Connect the Car... ");
+            sprintf(lcd_buff, "Connect the Car :)");
+            lcd_send_string(lcd_buff); 
+            lcd_put_cur(1,0);
+            sprintf(lcd_buff, " u_time: %d:%d",uptime.hour, uptime.min);
+            lcd_send_string(lcd_buff);
             break;
 
         case Vehicle_Connected:
-            lcd_send_string("Vehicle detected !");
+            
+            sprintf(lcd_buff, "Vehicle detected ;)");
+            lcd_send_string(lcd_buff); 
             lcd_put_cur(1,0);
-            lcd_send_string("Processing ...");
+            sprintf(lcd_buff, "Processing ... ");
+            lcd_send_string(lcd_buff);
 
-            printf("Vehicle detected \n");
             break;
 
         case Started_Charging:
-            lcd_send_string("Charging...");
-            printf("Charging \n");
+            sprintf(lcd_buff, "Charging :)");
+            lcd_send_string(lcd_buff); 
+            lcd_put_cur(1,0);
+            sprintf(lcd_buff, "Intensity: %d",intensite);
+            lcd_send_string(lcd_buff);
+
             break;
 
         /*case Stopped_Charging:
@@ -426,7 +443,8 @@ void transition(){
                     stop_pwm_temporarily();
                     on_off_contacteur(false);
                     //courrant_continue();
-                    update_buff_20(data_from_esp,"READY_TO_CONNECT",50);
+                    sprintf(lcd_buff,"A;%d;%d;%d;%d;%d;%d",uptime.hour, uptime.min,conso_tot,intensite,remaining_time.hour,remaining_time.min);
+                    
                     break;
 
                 case Vehicle_Connected:
@@ -439,6 +457,7 @@ void transition(){
                     gpio_set_level(CC_PWM_OUTPUT,0);
                     update_duty(1000,4096);
                     display(Vehicle_Connected);
+                    sprintf(lcd_buff,"B;%d;%d;%d;%d;%d;%d",uptime.hour, uptime.min,conso_tot,intensite,remaining_time.hour,remaining_time.min);
                     break;
 
                 case Started_Charging:
@@ -449,6 +468,7 @@ void transition(){
                     on_off_contacteur(true);
                     etat_actuel = Started_Charging;
                     display(Started_Charging);
+                    sprintf(lcd_buff,"C;%d;%d;%d;%d;%d;%d",uptime.hour, uptime.min,conso_tot,intensite,remaining_time.hour,remaining_time.min);
                     break;
 
                 /*case Stopped_Charging:
@@ -473,6 +493,7 @@ void transition(){
             //gpio_set_level(LED_PIN_3,0);
             //gpio_set_level(LED_PIN_4,1);
             etat_actuel=Ready_To_Connect;
+            sprintf(lcd_buff,"D;%d;%d;%d;%d;%d;%d",uptime.hour, uptime.min,conso_tot,intensite,remaining_time.hour,remaining_time.min);
         }
     }
     else{
@@ -481,7 +502,7 @@ void transition(){
         on_off_contacteur(false);
         etat_actuel = Ready_To_Connect;
         display(Ready_To_Connect);
-        update_buff_20(data_from_esp,"switched of via ble",50);
+        sprintf(lcd_buff,"E;%d;%d;%d;%d;%d;%d",uptime.hour, uptime.min,conso_tot,intensite,remaining_time.hour,remaining_time.min);
     }
 
 }
@@ -525,7 +546,6 @@ void app_main()
     ble_hs_cfg.sync_cb = ble_app_on_sync;      // 5 - Initialize application
     nimble_port_freertos_init(host_task);      // 6 - Run the thread
     
-    memcpy(data_from_esp,"testing the data \0",strlen("testing the data \0"));
+    
 }
-
 
