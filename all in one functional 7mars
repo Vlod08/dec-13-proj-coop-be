@@ -20,6 +20,7 @@
 #include "driver/adc.h"
 #include "driver/gpio.h"
 
+
 enum etat{Ready_To_Connect,Vehicle_Connected,Started_Charging/*,Stopped_Charging*/};
 void transition();
 enum etat pin_to_etat();
@@ -41,8 +42,51 @@ uint intensite = 0;
 struct date uptime = {1,2};
 
 /*#######################################################################################*/
+/*####################### CONFIGS AND FUNCTIONS FOR THE TIMER ###########################*/
+/*#######################################################################################*/
+
+
+
+
+/*#######################################################################################*/
 /*#################### CONFIGS AND FUNCTIONS FOR THE BLUETOOTH  #######################*/
 /*#######################################################################################*/
+
+
+void parser(char *buffer){
+    int taille = strlen(buffer);
+    char temp_buff[5] = "";
+    int nb_messages = 1;
+    int temp_counter=0;
+    for(int i =0; i<taille;i++){
+        if(buffer[i]==';'){
+            printf("parsed_msg %d : %s \n",nb_messages,temp_buff);
+            if(nb_messages==1){
+
+                if(strcmp(temp_buff,"ON")==0)
+                {
+                    start = true;
+                }
+                else if(strcmp(temp_buff,"OFF")==0) {
+                    start = false;
+                }
+            }
+            else if(nb_messages==2){
+                remaining_time.hour = atoi(temp_buff);
+            }
+            else{
+                remaining_time.min = atoi(temp_buff);
+            }
+            temp_counter = 0;
+            nb_messages++;
+            memset(temp_buff,' ',5);
+        }
+        else{
+            temp_buff[temp_counter] = buffer[i];
+            temp_counter++;
+        }
+    }
+}
 
 char *TAG = "BLE-Server";
 uint8_t ble_addr_type;
@@ -65,16 +109,11 @@ void update_buff_20(char buff[], char string[], int taille){
 static int device_write(uint16_t conn_handle, uint16_t attr_handle, struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
     
-    char recv[8] = {};
-    os_mbuf_copydata(ctxt->om,0,8,recv);
+    char recv[50] = {};
+    os_mbuf_copydata(ctxt->om,0,50,recv);
     printf("Data from the client: %s\n",recv);
-    if(strcmp(recv,"ON")==0)
-    {
-        start = true;
-    }
-    else if(strcmp(recv,"OFF")==0) {
-        start = false;
-    }
+    parser(recv);
+
     return 0;
 }
 
@@ -190,7 +229,8 @@ void on_off_contacteur(bool on){
         gpio_set_level(CONTACTEUR_PIN,0);
         printf("stopped contacteur\n");
     }
-    printf("start value : %d",(int)start);
+    printf("start value : %d \n",start);
+    printf("Timer : %d : %d \n",remaining_time.hour,remaining_time.min);
     
 }
 
