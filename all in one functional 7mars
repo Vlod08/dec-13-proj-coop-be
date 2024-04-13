@@ -1,4 +1,3 @@
-
 #include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -19,6 +18,10 @@
 #include "esp_err.h"
 #include "driver/adc.h"
 #include "driver/gpio.h"
+#include "esp_timer.h"
+
+
+
 
 
 enum etat{Ready_To_Connect,Vehicle_Connected,Started_Charging/*,Stopped_Charging*/};
@@ -40,12 +43,33 @@ struct date{
 struct date remaining_time={-1,-1};
 uint intensite = 0;
 struct date uptime = {1,2};
+uint64_t test, ctest;
 
 /*#######################################################################################*/
 /*####################### CONFIGS AND FUNCTIONS FOR THE TIMER ###########################*/
 /*#######################################################################################*/
 
+// Define the callback function
+void timer_callback(void* arg)
+{
+    start = false;
+}
 
+
+const esp_timer_create_args_t timer_args = {
+    .callback = &timer_callback,
+    .name = "example_timer"
+};
+// Create the timer
+
+esp_timer_handle_t timer;
+
+
+// Start the timer in one-shot mode with a timeout of 3 seconds (3000000 microseconds)
+
+
+// Keep the task running to allow the timer callback to execute
+//vTaskDelay(portMAX_DELAY);
 
 
 /*#######################################################################################*/
@@ -85,6 +109,11 @@ void parser(char *buffer){
             temp_buff[temp_counter] = buffer[i];
             temp_counter++;
         }
+    }
+
+    if(start != false && remaining_time.hour >= 0 && remaining_time.hour >= 0 ){
+        esp_timer_start_once(timer,  ((remaining_time.hour*3600)+(remaining_time.min*60)) * 1000000);
+        test = esp_timer_get_time();
     }
 }
 
@@ -229,8 +258,11 @@ void on_off_contacteur(bool on){
         gpio_set_level(CONTACTEUR_PIN,0);
         printf("stopped contacteur\n");
     }
+    ctest = esp_timer_get_time() - test;
+    ctest = (((remaining_time.hour*3600)+(remaining_time.min*60)) * 1000000)-ctest;
     printf("start value : %d \n",start);
     printf("Timer : %d : %d \n",remaining_time.hour,remaining_time.min);
+    printf("r time : %lld microseconds ", ctest);
     
 }
 
@@ -485,6 +517,7 @@ void transition(){
                     //courrant_continue();
                     sprintf(lcd_buff,"A;%d;%d;%d;%d;%d;%d",uptime.hour, uptime.min,conso_tot,intensite,remaining_time.hour,remaining_time.min);
                     
+                    
                     break;
 
                 case Vehicle_Connected:
@@ -565,6 +598,7 @@ void app_main()
     lcd_clear();
     configure_voltage_reader();
     config_contacteur();
+    esp_timer_create(&timer_args, &timer);
 
     //configure_LED();
     xTaskCreatePinnedToCore(read_voltage,"voltage",2048,NULL,2,NULL,1);
@@ -585,7 +619,6 @@ void app_main()
     ble_gatts_add_svcs(gatt_svcs);             // 4 - Initialize NimBLE configuration - queues gatt services.
     ble_hs_cfg.sync_cb = ble_app_on_sync;      // 5 - Initialize application
     nimble_port_freertos_init(host_task);      // 6 - Run the thread
-    
-    
-}
 
+
+}
