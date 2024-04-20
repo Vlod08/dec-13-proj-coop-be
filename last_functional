@@ -1,0 +1,624 @@
+#include <stdio.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/event_groups.h"
+#include "esp_event.h"
+#include "nvs_flash.h"
+#include "esp_log.h"
+#include "esp_nimble_hci.h"
+#include "nimble/nimble_port.h"
+#include "nimble/nimble_port_freertos.h"
+#include "host/ble_hs.h"
+#include "services/gap/ble_svc_gap.h"
+#include "services/gatt/ble_svc_gatt.h"
+#include "sdkconfig.h"
+#include "driver/i2c.h"
+#include "i2c-lcd.h"
+#include "driver/ledc.h"
+#include "esp_err.h"
+#include "driver/adc.h"
+#include "driver/gpio.h"
+#include "esp_timer.h"
+
+
+
+
+
+enum etat{Ready_To_Connect,Vehicle_Connected,Started_Charging/*,Stopped_Charging*/};
+void transition();
+enum etat pin_to_etat();
+void display( enum etat e);
+void pwm_init(void);
+static void stop_pwm_temporarily();
+void update_duty(unsigned int freq, unsigned int uduty);
+void read_voltage();
+enum etat voltage_to_etat();
+bool start = true;
+char lcd_buff[50], ble_buff[20];
+int conso_tot = 0;
+struct date{
+    int hour;
+    int min;
+};
+struct date remaining_time={-1,-1};
+uint intensite = 0;
+struct date uptime = {1,2};
+uint64_t test, ctest;
+
+/*#######################################################################################*/
+/*####################### CONFIGS AND FUNCTIONS FOR THE TIMER ###########################*/
+/*#######################################################################################*/
+
+// Define the callback function
+void timer_callback(void* arg)
+{
+    start = false;
+}
+
+
+const esp_timer_create_args_t timer_args = {
+    .callback = &timer_callback,
+    .name = "example_timer"
+};
+// Create the timer
+
+esp_timer_handle_t timer;
+
+
+// Start the timer in one-shot mode with a timeout of 3 seconds (3000000 microseconds)
+
+
+// Keep the task running to allow the timer callback to execute
+//vTaskDelay(portMAX_DELAY);
+
+
+/*#######################################################################################*/
+/*#################### CONFIGS AND FUNCTIONS FOR THE BLUETOOTH  #######################*/
+/*#######################################################################################*/
+
+
+void parser(char *buffer){
+    int taille = strlen(buffer);
+    char temp_buff[5] = "";
+    int nb_messages = 1;
+    int temp_counter=0;
+    for(int i =0; i<taille;i++){
+        if(buffer[i]==';'){
+            printf("parsed_msg %d : %s \n",nb_messages,temp_buff);
+            if(nb_messages==1){
+
+                if(strcmp(temp_buff,"ON")==0)
+                {
+                    start = true;
+                }
+                else if(strcmp(temp_buff,"OFF")==0) {
+                    start = false;
+                }
+            }
+            else if(nb_messages==2){
+                remaining_time.hour = atoi(temp_buff);
+            }
+            else{
+                remaining_time.min = atoi(temp_buff);
+            }
+            temp_counter = 0;
+            nb_messages++;
+            memset(temp_buff,' ',5);
+        }
+        else{
+            temp_buff[temp_counter] = buffer[i];
+            temp_counter++;
+        }
+    }
+
+    if(start != false && remaining_time.hour >= 0 && remaining_time.hour >= 0 ){
+        esp_timer_start_once(timer,  ((remaining_time.hour*3600)+(remaining_time.min*60)) * 1000000);
+        test = esp_timer_get_time();
+    }
+}
+
+char *TAG = "BLE-Server";
+uint8_t ble_addr_type;
+void ble_app_advertise(void);
+
+void update_buff_20(char buff[], char string[], int taille){
+    int t_str = strlen(string);
+    for (int i = 0 ; i<t_str; i++){
+        buff[i] = string[i];
+    }
+
+    for(int i = t_str; i<taille ; i++){
+        buff[i]=' ';
+    }
+}
+
+
+
+// Write data to ESP32 defined as server
+static int device_write(uint16_t conn_handle, uint16_t attr_handle, struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    
+    char recv[50] = {};
+    os_mbuf_copydata(ctxt->om,0,50,recv);
+    printf("Data from the client: %s\n",recv);
+    parser(recv);
+
+    return 0;
+}
+
+
+// Read data from ESP32 defined as server
+static int device_read(uint16_t con_handle, uint16_t attr_handle, struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+   //clear_mbuf(ctxt->om);
+   ESP_LOGI("GAP", "call start");
+   
+   int append_size = os_mbuf_append(ctxt->om,ble_buff, sizeof(ble_buff)/sizeof(char));
+   ESP_LOGI("GAP", "call done");
+   return 0;
+}
+
+
+
+// Array of pointers to other service definitions
+// UUID - Universal Unique Identifier
+static const struct ble_gatt_svc_def gatt_svcs[] = {
+    {.type = BLE_GATT_SVC_TYPE_PRIMARY,
+     .uuid = BLE_UUID16_DECLARE(0x180),                 // Define UUID for device type
+     .characteristics = (struct ble_gatt_chr_def[]){
+         {.uuid = BLE_UUID16_DECLARE(0x2A00),           // Define UUID for reading
+          .flags = BLE_GATT_CHR_F_READ,
+          .access_cb = device_read},
+         {.uuid = BLE_UUID16_DECLARE(0xDEAD),           // Define UUID for writing
+          .flags = BLE_GATT_CHR_F_WRITE,
+          .access_cb = device_write},
+        {0}}},
+    {0}};
+
+// BLE event handling
+static int ble_gap_event(struct ble_gap_event *event, void *arg)
+{
+    switch (event->type)
+    {
+    // Advertise if connected
+    case BLE_GAP_EVENT_CONNECT:
+        ESP_LOGI("GAP", "BLE GAP EVENT CONNECT %s", event->connect.status == 0 ? "OK!" : "FAILED!");
+        if (event->connect.status != 0)
+        {
+            ble_app_advertise();
+        }
+        break;
+    // Advertise again after completion of the event
+    case BLE_GAP_EVENT_DISCONNECT:
+        ESP_LOGI("GAP", "BLE GAP EVENT DISCONNECTED");
+        break;
+    case BLE_GAP_EVENT_ADV_COMPLETE:
+        ESP_LOGI("GAP", "BLE GAP EVENT");
+        ble_app_advertise();
+        break;
+    default:
+        break;
+    }
+    return 0;
+}
+
+// Define the BLE connection
+void ble_app_advertise(void)
+{
+    // GAP - device name definition
+    struct ble_hs_adv_fields fields;
+    const char *device_name;
+    memset(&fields, 0, sizeof(fields));
+    device_name = ble_svc_gap_device_name(); // Read the BLE device name
+    fields.name = (uint8_t *)device_name;
+    fields.name_len = strlen(device_name);
+    fields.name_is_complete = 1;
+    ble_gap_adv_set_fields(&fields);
+
+    // GAP - device connectivity definition
+    struct ble_gap_adv_params adv_params;
+    memset(&adv_params, 0, sizeof(adv_params));
+    adv_params.conn_mode = BLE_GAP_CONN_MODE_UND; // connectable or non-connectable
+    adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN; // discoverable or non-discoverable
+    ble_gap_adv_start(ble_addr_type, NULL, BLE_HS_FOREVER, &adv_params, ble_gap_event, NULL);
+}
+
+// The application
+void ble_app_on_sync(void)
+{
+    ble_hs_id_infer_auto(0, &ble_addr_type); // Determines the best address type automatically
+    ble_app_advertise();                     // Define the BLE connection
+}
+
+// The infinite task
+void host_task(void *param)
+{
+    nimble_port_run(); // This function will return only when nimble_port_stop() is executed
+}
+
+
+
+/*#######################################################################################*/
+/*#################### CONFIGS AND FUNCTIONS FOR THE CONTACTEUR  #######################*/
+/*#######################################################################################*/
+
+#define CONTACTEUR_PIN GPIO_NUM_2
+
+void config_contacteur(){
+    gpio_set_direction(CONTACTEUR_PIN,GPIO_MODE_OUTPUT);
+}
+
+void on_off_contacteur(bool on){
+    if(on){
+        gpio_set_level(CONTACTEUR_PIN,1);
+        printf("started contacteur\n");
+        
+    }
+    else{
+        gpio_set_level(CONTACTEUR_PIN,0);
+        printf("stopped contacteur\n");
+    }
+    ctest = esp_timer_get_time() - test;
+    ctest = (((remaining_time.hour*3600)+(remaining_time.min*60)) * 1000000)-ctest;
+    printf("start value : %d \n",start);
+    printf("Timer : %d : %d \n",remaining_time.hour,remaining_time.min);
+    printf("r time : %lld microseconds ", ctest);
+    
+}
+
+/*#######################################################################################*/
+/*#################### CONFIGS AND FUNCTIONS FOR THE LCD DISPLAY  #######################*/
+/*#######################################################################################*/
+
+static esp_err_t i2c_master_init(void)
+{
+    int i2c_master_port = I2C_NUM_0;
+
+    i2c_config_t conf = {
+        .mode = I2C_MODE_MASTER,
+        .sda_io_num = GPIO_NUM_21,
+        .scl_io_num = GPIO_NUM_22,
+        .sda_pullup_en = GPIO_PULLUP_ENABLE,
+        .scl_pullup_en = GPIO_PULLUP_ENABLE,
+        .master.clk_speed = 100000,
+    };
+
+    i2c_param_config(i2c_master_port, &conf);
+
+    return i2c_driver_install(i2c_master_port, conf.mode, 0, 0, 0);
+}
+
+void display( enum etat e){
+
+    lcd_clear();
+    lcd_put_cur(0,0);
+
+    switch(e){
+        case Ready_To_Connect:
+            sprintf(lcd_buff, "Connect the Car :)");
+            lcd_send_string(lcd_buff); 
+            lcd_put_cur(1,0);
+            sprintf(lcd_buff, " u_time: %d:%d",uptime.hour, uptime.min);
+            lcd_send_string(lcd_buff);
+            break;
+
+        case Vehicle_Connected:
+            
+            sprintf(lcd_buff, "Vehicle detected ;)");
+            lcd_send_string(lcd_buff); 
+            lcd_put_cur(1,0);
+            sprintf(lcd_buff, "Processing ... ");
+            lcd_send_string(lcd_buff);
+
+            break;
+
+        case Started_Charging:
+            sprintf(lcd_buff, "Charging :)");
+            lcd_send_string(lcd_buff); 
+            lcd_put_cur(1,0);
+            sprintf(lcd_buff, "Intensity: %d",intensite);
+            lcd_send_string(lcd_buff);
+
+            break;
+
+        /*case Stopped_Charging:
+            lcd_send_string("Charging Stopped");
+            lcd_put_cur(1,0);
+            lcd_send_string("Enjoy the ride !");
+            printf("Charging stopped \n");
+            break;*/
+    }
+}
+
+
+/*#######################################################################################*/
+/*################## CONFIGS AND FUNCTIONS FOR THE PWM GENERATOR  #######################*/
+/*#######################################################################################*/
+
+
+
+#define LEDC_TIMER              LEDC_TIMER_0
+#define LEDC_MODE               LEDC_LOW_SPEED_MODE // find why the low speed mode ??
+#define CC_PWM_OUTPUT           5                   // Define the output GPIO
+#define LEDC_CHANNEL            LEDC_CHANNEL_0
+#define LEDC_DUTY_RES           LEDC_TIMER_13_BIT   // Set duty resolution to 13 bits
+#define LEDC_DUTY               4096                // Set duty to 50%. (2^13) * 50% = 4096
+#define LEDC_FREQUENCY          1000                // Frequency in Hertz. Set frequency at 1 kHz
+
+
+void pwm_init(void)
+{
+    // Prepare and then apply the LEDC PWM timer configuration
+    ledc_timer_config_t ledc_timer =  {
+        .speed_mode       = LEDC_MODE,
+        .timer_num        = LEDC_TIMER,
+        .duty_resolution  = LEDC_DUTY_RES,
+        .freq_hz          = 1000,
+        .clk_cfg          = LEDC_AUTO_CLK
+    };
+    ESP_ERROR_CHECK(ledc_timer_config(&ledc_timer));
+
+    // Prepare and then apply the LEDC PWM channel configuration
+    ledc_channel_config_t ledc_channel =  {
+        .speed_mode     = LEDC_MODE,
+        .channel        = LEDC_CHANNEL,
+        .timer_sel      = LEDC_TIMER,
+        .intr_type      = LEDC_INTR_DISABLE,
+        .gpio_num       = CC_PWM_OUTPUT,
+        .duty           = 0, // Set duty to 0%
+        .hpoint         = 0
+    };
+    ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
+}
+
+static void stop_pwm_temporarily()
+{
+
+    ESP_ERROR_CHECK(ledc_stop(LEDC_MODE, LEDC_CHANNEL, 1));
+
+}
+
+void update_duty(unsigned int freq, unsigned int uduty){
+
+    gpio_set_pull_mode(CC_PWM_OUTPUT,GPIO_PULLUP_DISABLE);
+
+    ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
+    ledc_timer_config_t ledc_timer =  {
+        .speed_mode       = LEDC_MODE,
+        .timer_num        = LEDC_TIMER,
+        .duty_resolution  = LEDC_DUTY_RES,
+        .freq_hz          = freq,
+        .clk_cfg          = LEDC_AUTO_CLK
+    };
+
+    ESP_ERROR_CHECK(ledc_timer_config(&ledc_timer));
+    ledc_channel_config_t ledc_channel =  {
+        .speed_mode     = LEDC_MODE,
+        .channel        = LEDC_CHANNEL,
+        .timer_sel      = LEDC_TIMER,
+        .intr_type      = LEDC_INTR_DISABLE,
+        .gpio_num       = CC_PWM_OUTPUT,
+        .duty           = uduty,
+        .hpoint         = 0
+    };
+    ESP_ERROR_CHECK(ledc_channel_config(&ledc_channel));
+    ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
+
+}
+
+
+/*#######################################################################################*/
+/*################## CONFIGS AND FUNCTIONS FOR THE VOLTAGE READER #######################*/
+/*#######################################################################################*/
+
+#define V0 3042 // = (3+2.2)/2 v 
+#define V1 2165 // = (2.2+1.5)/2 v
+#define V2 1288 // = (1.5+0.7)/2 v
+#define V3 0    // = (3+2.2)/2 v
+#define INTERVAL 500
+
+uint32_t voltage = 0; // global variable which has voltage measure
+
+
+void read_voltage(){
+    for(;;){
+        voltage = adc1_get_raw(ADC1_CHANNEL_6);
+        printf("%ld\n", voltage);
+        vTaskDelay(INTERVAL / portTICK_PERIOD_MS);
+        transition();
+    }
+}
+
+enum etat voltage_to_etat(){
+    if( (4096 >= voltage) && (voltage >= V0) ){
+        return Ready_To_Connect;
+    }
+    else if (voltage >= V1){
+        return Vehicle_Connected;
+    }
+    else if(voltage >= V2){
+        return Started_Charging;
+    }
+    /*else if(voltage < V3){
+        return Stopped_Charging;
+    }*/
+    return Ready_To_Connect;
+    
+}
+
+/*#######################################################################################*/
+/*###################### CONFIGS AND FUNCTION FOR THE LEDS  #############################*/
+/*#######################################################################################*/
+
+
+
+
+//  #define LED_PIN_1 27    // Led pins used before lcd display to visualise the etats
+//  #define LED_PIN_2 26
+//  #define LED_PIN_3 33
+//  #define LED_PIN_4 32
+
+
+//  void configure_LED(){
+//
+//      gpio_set_direction(LED_PIN_1, GPIO_MODE_OUTPUT);
+//      gpio_set_direction(LED_PIN_2, GPIO_MODE_OUTPUT);
+//      gpio_set_direction(LED_PIN_3, GPIO_MODE_OUTPUT);
+//      gpio_set_direction(LED_PIN_4, GPIO_MODE_OUTPUT);
+//
+//
+//  }
+//
+
+/*#######################################################################################*/
+/*########################## GENERAL CONFIGS AND FUNCTIONS  #############################*/
+/*#######################################################################################*/
+
+
+
+
+enum etat etat_actuel;
+
+void configure_voltage_reader(){
+
+    // Configure ADC1 capture width
+    // 12 bit decimal value from 0 to 4095
+    adc1_config_width(ADC_WIDTH_BIT_12);
+    //ADC1_CHANNEL_6 = pin 34),  attenuation (ADC_ATTEN_DB_11)
+    adc1_config_channel_atten(ADC1_CHANNEL_6, ADC_ATTEN_DB_11);
+    // pin 33
+    adc2_config_channel_atten(ADC2_CHANNEL_8, ADC_ATTEN_DB_11);
+    adc_vref_to_gpio(ADC_UNIT_2,ADC2_CHANNEL_8);
+        // Take an ADC1 reading on a single channel (ADC1_CHANNEL_6 pin 34)
+        // 11dB attenuation (ADC_ATTEN_DB_11) gives full-scale voltage 0 - 3.9V
+        // 4053 ~ 3.86V
+}
+
+
+
+
+
+void transition(){
+    if(start){
+        enum etat signal = voltage_to_etat();
+        if( signal == Ready_To_Connect || signal == etat_actuel ||  abs((int)etat_actuel-signal) <=1 )
+        {
+            switch(signal){
+
+                case Ready_To_Connect:
+                    //gpio_set_level(LED_PIN_1,1);
+                    //gpio_set_level(LED_PIN_2,0);
+                    //gpio_set_level(LED_PIN_3,0);
+                    //gpio_set_level(LED_PIN_4,0);
+                    etat_actuel=Ready_To_Connect;
+                    display(Ready_To_Connect);
+                    stop_pwm_temporarily();
+                    on_off_contacteur(false);
+                    //courrant_continue();
+                    sprintf(lcd_buff,"A;%d;%d;%d;%d;%d;%d",uptime.hour, uptime.min,conso_tot,intensite,remaining_time.hour,remaining_time.min);
+                    
+                    
+                    break;
+
+                case Vehicle_Connected:
+                    //gpio_set_level(LED_PIN_1,1);
+                    //gpio_set_level(LED_PIN_2,1);
+                    //gpio_set_level(LED_PIN_3,0);
+                    //gpio_set_level(LED_PIN_4,0);
+                    on_off_contacteur(false);
+                    etat_actuel = Vehicle_Connected;
+                    gpio_set_level(CC_PWM_OUTPUT,0);
+                    update_duty(1000,4096);
+                    display(Vehicle_Connected);
+                    sprintf(lcd_buff,"B;%d;%d;%d;%d;%d;%d",uptime.hour, uptime.min,conso_tot,intensite,remaining_time.hour,remaining_time.min);
+                    break;
+
+                case Started_Charging:
+                    //gpio_set_level(LED_PIN_1,1);
+                    //gpio_set_level(LED_PIN_2,1);
+                    //gpio_set_level(LED_PIN_3,1);
+                    //gpio_set_level(LED_PIN_4,0);
+                    on_off_contacteur(true);
+                    etat_actuel = Started_Charging;
+                    display(Started_Charging);
+                    sprintf(lcd_buff,"C;%d;%d;%d;%d;%d;%d",uptime.hour, uptime.min,conso_tot,intensite,remaining_time.hour,remaining_time.min);
+                    break;
+
+                /*case Stopped_Charging:
+                    //gpio_set_level(LED_PIN_1,1);
+                    //gpio_set_level(LED_PIN_2,1);
+                    //gpio_set_level(LED_PIN_3,1);
+                    //gpio_set_level(LED_PIN_4,1);
+                    etat_actuel = Stopped_Charging;
+                    display(Stopped_Charging);
+                    break;*/
+
+            }
+        }
+
+        else{
+            lcd_clear();
+            lcd_send_string("Error!!!");
+            lcd_put_cur(1,0);
+            lcd_send_string("Connect the Car");
+            //gpio_set_level(LED_PIN_1,1);
+            //gpio_set_level(LED_PIN_2,0);
+            //gpio_set_level(LED_PIN_3,0);
+            //gpio_set_level(LED_PIN_4,1);
+            etat_actuel=Ready_To_Connect;
+            sprintf(lcd_buff,"D;%d;%d;%d;%d;%d;%d",uptime.hour, uptime.min,conso_tot,intensite,remaining_time.hour,remaining_time.min);
+        }
+    }
+    else{
+        //etat_actuel = Stopped_Charging;
+        //display(Stopped_Charging);
+        on_off_contacteur(false);
+        etat_actuel = Ready_To_Connect;
+        display(Ready_To_Connect);
+        sprintf(lcd_buff,"E;%d;%d;%d;%d;%d;%d",uptime.hour, uptime.min,conso_tot,intensite,remaining_time.hour,remaining_time.min);
+    }
+
+}
+
+
+
+
+
+
+
+
+void app_main()
+{
+
+    ESP_ERROR_CHECK(i2c_master_init());
+
+    start = 1;
+    etat_actuel = Ready_To_Connect;
+    lcd_init();
+    lcd_clear();
+    configure_voltage_reader();
+    config_contacteur();
+    esp_timer_create(&timer_args, &timer);
+
+    //configure_LED();
+    xTaskCreatePinnedToCore(read_voltage,"voltage",2048,NULL,2,NULL,1);
+
+    pwm_init();
+    // Set duty to 50%
+    ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, LEDC_DUTY));
+    // Update duty to apply the new value
+    ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
+
+    nvs_flash_init();                          // 1 - Initialize NVS flash using
+    // esp_nimble_hci_and_controller_init();      // 2 - Initialize ESP controller
+    nimble_port_init();                        // 3 - Initialize the host stack
+    ble_svc_gap_device_name_set("BLE-Server"); // 4 - Initialize NimBLE configuration - server name
+    ble_svc_gap_init();                        // 4 - Initialize NimBLE configuration - gap service
+    ble_svc_gatt_init();                       // 4 - Initialize NimBLE configuration - gatt service
+    ble_gatts_count_cfg(gatt_svcs);            // 4 - Initialize NimBLE configuration - config gatt services
+    ble_gatts_add_svcs(gatt_svcs);             // 4 - Initialize NimBLE configuration - queues gatt services.
+    ble_hs_cfg.sync_cb = ble_app_on_sync;      // 5 - Initialize application
+    nimble_port_freertos_init(host_task);      // 6 - Run the thread
+
+
+}
