@@ -19,6 +19,7 @@
 #include "driver/adc.h"
 #include "driver/gpio.h"
 #include "esp_timer.h"
+#include "esp_task_wdt.h"
 
 
 
@@ -34,7 +35,7 @@ void update_duty(unsigned int freq, unsigned int uduty);
 void read_voltage();
 enum etat voltage_to_etat();
 bool start = true;
-char lcd_buff[16], ble_buff[20];
+char lcd_buff1[16], lcd_buff2[16], ble_buff[20];
 int conso_tot = 0;
 struct date{
     int hour;
@@ -43,8 +44,9 @@ struct date{
 struct date remaining_time={-1,-1};
 struct date timer_time={-1,-1};
 uint intensite = 0;
-struct date uptime = {1,2};
-uint64_t time_init, time_crt, time_buff;
+struct date uptime = {-1,-1};
+struct date time_buff = {-1,-1};
+uint64_t time_init, time_crt;
 
 /*#######################################################################################*/
 /*####################### CONFIGS AND FUNCTIONS FOR THE TIMER ###########################*/
@@ -60,8 +62,8 @@ void time_to_date(uint64_t time, struct date*  dt){
 }
 
 void calc_remaining_time(){
-    remaining_time.hour = timer_time.hour - remaining_time.hour;
-    remaining_time.min  = timer_time.min  - remaining_time.min;
+    remaining_time.hour = timer_time.hour - time_buff.hour;
+    remaining_time.min  = timer_time.min  - time_buff.min;
     if(remaining_time.min < 0){
         if(remaining_time.hour>0)
         {
@@ -72,7 +74,7 @@ void calc_remaining_time(){
 
 void verify_timer()
 {   
-    time_to_date(time_crt, &remaining_time); 
+    time_to_date(time_crt, &time_buff); 
     calc_remaining_time();
     if(remaining_time.hour <= 0 && remaining_time.min <= 0 && timer_time.hour != -1 && timer_time.min != -1 ) 
     {
@@ -243,7 +245,7 @@ void ble_app_on_sync(void)
 
 // The infinite task
 void host_task(void *param)
-{
+{   esp_task_wdt_delete(NULL);
     nimble_port_run(); // This function will return only when nimble_port_stop() is executed
 }
 
@@ -262,12 +264,12 @@ void config_contacteur(){
 void on_off_contacteur(bool on){
     if(on){
         gpio_set_level(CONTACTEUR_PIN,1);
-        printf("started contacteur\n");
+        //printf("started contacteur\n");
         
     }
     else{
         gpio_set_level(CONTACTEUR_PIN,0);
-        printf("stopped contacteur\n");
+        //printf("stopped contacteur\n");
     }
     
 }
@@ -294,48 +296,39 @@ static esp_err_t i2c_master_init(void)
     return i2c_driver_install(i2c_master_port, conf.mode, 0, 0, 0);
 }
 
+int disp_int = 0;
+
 void display( enum etat e){
     verify_timer();
     lcd_clear();
     lcd_put_cur(0,0);
-    sprintf(lcd_buff,"T:%d:%d",remaining_time.hour,remaining_time.min);
-    lcd_send_string(lcd_buff);
-
-    switch(e){
-        case Ready_To_Connect:
-            //sprintf(lcd_buff, "A");
-            //lcd_send_string(lcd_buff); 
-            lcd_put_cur(1,0);
-            sprintf(lcd_buff, " u_time: %d:%d",uptime.hour, uptime.min);
-            lcd_send_string(lcd_buff);
+    lcd_send_string(lcd_buff1);
+    lcd_put_cur(1,0);
+    
+    switch(disp_int/3){
+        case 0:
+            sprintf(lcd_buff2,"up_time:%d:%d",uptime.hour,uptime.min);
+            lcd_send_string(lcd_buff2);
             break;
-
-        case Vehicle_Connected:
-            
-            //sprintf(lcd_buff, "B)");
-            //lcd_send_string(lcd_buff); 
-            lcd_put_cur(1,0);
-            sprintf(lcd_buff, "P");
-            lcd_send_string(lcd_buff);
-
+        case 1:
+            sprintf(lcd_buff2,"Tot_Concump:%d",conso_tot);
+            lcd_send_string(lcd_buff2);
             break;
-
-        case Started_Charging:
-            //sprintf(lcd_buff, "C");
-            //lcd_send_string(lcd_buff); 
-            lcd_put_cur(1,0);
-            sprintf(lcd_buff, "In %d",intensite);
-            lcd_send_string(lcd_buff);
-
+        case 2:
+            sprintf(lcd_buff2,"Int_act:%d",intensite);
+            lcd_send_string(lcd_buff2);
             break;
-
-        /*case Stopped_Charging:
-            lcd_send_string("Charging Stopped");
-            lcd_put_cur(1,0);
-            lcd_send_string("Enjoy the ride !");
-            printf("Charging stopped \n");
-            break;*/
+        case 3:
+            sprintf(lcd_buff2,"Rem_tiem:%d:%d",remaining_time.hour,remaining_time.min);
+            lcd_send_string(lcd_buff2);
+            break;
+        default:
+            sprintf(lcd_buff2,"Error in Disp");
+            lcd_send_string(lcd_buff2);
+            break;
     }
+    disp_int++;
+    if(disp_int == 12){disp_int = 0;}
 }
 
 
@@ -423,7 +416,7 @@ void update_duty(unsigned int freq, unsigned int uduty){
 #define V1 2165 // = (2.2+1.5)/2 v
 #define V2 1288 // = (1.5+0.7)/2 v
 #define V3 0    // = (3+2.2)/2 v
-#define INTERVAL 500
+#define INTERVAL 1000
 
 uint32_t voltage = 0; // global variable which has voltage measure
 
@@ -515,42 +508,33 @@ void transition(){
             switch(signal){
 
                 case Ready_To_Connect:
-                    //gpio_set_level(LED_PIN_1,1);
-                    //gpio_set_level(LED_PIN_2,0);
-                    //gpio_set_level(LED_PIN_3,0);
-                    //gpio_set_level(LED_PIN_4,0);
+                    sprintf(lcd_buff1,"ETAT : A");
                     etat_actuel=Ready_To_Connect;
                     display(Ready_To_Connect);
                     stop_pwm_temporarily();
                     on_off_contacteur(false);
                     //courrant_continue();
-                    sprintf(lcd_buff,"A;%d;%d;%d;%d;%d;%d",uptime.hour, uptime.min,conso_tot,intensite,remaining_time.hour,remaining_time.min);
+                    sprintf(ble_buff,"A;%d;%d;%d;%d;%d;%d",uptime.hour, uptime.min,conso_tot,intensite,remaining_time.hour,remaining_time.min);
                     
                     
                     break;
 
                 case Vehicle_Connected:
-                    //gpio_set_level(LED_PIN_1,1);
-                    //gpio_set_level(LED_PIN_2,1);
-                    //gpio_set_level(LED_PIN_3,0);
-                    //gpio_set_level(LED_PIN_4,0);
+                    sprintf(lcd_buff1,"ETAT : B");
                     on_off_contacteur(false);
                     etat_actuel = Vehicle_Connected;
                     gpio_set_level(CC_PWM_OUTPUT,0);
                     update_duty(1000,4096);
                     display(Vehicle_Connected);
-                    sprintf(lcd_buff,"B;%d;%d;%d;%d;%d;%d",uptime.hour, uptime.min,conso_tot,intensite,remaining_time.hour,remaining_time.min);
+                    sprintf(ble_buff,"B;%d;%d;%d;%d;%d;%d",uptime.hour, uptime.min,conso_tot,intensite,remaining_time.hour,remaining_time.min);
                     break;
 
                 case Started_Charging:
-                    //gpio_set_level(LED_PIN_1,1);
-                    //gpio_set_level(LED_PIN_2,1);
-                    //gpio_set_level(LED_PIN_3,1);
-                    //gpio_set_level(LED_PIN_4,0);
+                    sprintf(lcd_buff1,"ETAT : C");
                     on_off_contacteur(true);
                     etat_actuel = Started_Charging;
                     display(Started_Charging);
-                    sprintf(lcd_buff,"C;%d;%d;%d;%d;%d;%d",uptime.hour, uptime.min,conso_tot,intensite,remaining_time.hour,remaining_time.min);
+                    sprintf(ble_buff,"C;%d;%d;%d;%d;%d;%d",uptime.hour, uptime.min,conso_tot,intensite,remaining_time.hour,remaining_time.min);
                     break;
 
                 /*case Stopped_Charging:
@@ -575,7 +559,7 @@ void transition(){
             //gpio_set_level(LED_PIN_3,0);
             //gpio_set_level(LED_PIN_4,1);
             etat_actuel=Ready_To_Connect;
-            sprintf(lcd_buff,"D;%d;%d;%d;%d;%d;%d",uptime.hour, uptime.min,conso_tot,intensite,remaining_time.hour,remaining_time.min);
+            sprintf(ble_buff,"D;%d;%d;%d;%d;%d;%d",uptime.hour, uptime.min,conso_tot,intensite,remaining_time.hour,remaining_time.min);
         }
     }
     else{
@@ -584,7 +568,7 @@ void transition(){
         on_off_contacteur(false);
         etat_actuel = Ready_To_Connect;
         display(Ready_To_Connect);
-        sprintf(lcd_buff,"E;%d;%d;%d;%d;%d;%d",uptime.hour, uptime.min,conso_tot,intensite,remaining_time.hour,remaining_time.min);
+        sprintf(ble_buff,"E;%d;%d;%d;%d;%d;%d",uptime.hour, uptime.min,conso_tot,intensite,remaining_time.hour,remaining_time.min);
     }
 
 }
@@ -609,7 +593,7 @@ void app_main()
     config_contacteur();
 
     //configure_LED();
-    xTaskCreatePinnedToCore(read_voltage,"voltage",2048,NULL,2,NULL,1);
+    xTaskCreatePinnedToCore(read_voltage,"voltage",2048,NULL,5,NULL,1); // moved priority from 2 to 5
 
     pwm_init();
     // Set duty to 50%
@@ -627,6 +611,7 @@ void app_main()
     ble_gatts_add_svcs(gatt_svcs);             // 4 - Initialize NimBLE configuration - queues gatt services.
     ble_hs_cfg.sync_cb = ble_app_on_sync;      // 5 - Initialize application
     nimble_port_freertos_init(host_task);      // 6 - Run the thread
+
 
 
 }
